@@ -5,7 +5,7 @@ use cuid::cuid;
 use rocket::{catchers, Request, routes, get, catch, FromForm, post, request, Data, State, Config,delete};
 use rocket::data::ToByteUnit;
 use rocket::form::{Form, Strict};
-use rocket::fs::{NamedFile, TempFile};
+use rocket::fs::{FileServer, NamedFile, TempFile,relative};
 use rocket::futures::future::IntoStream;
 use rocket::futures::FutureExt;
 use rocket::http::Status;
@@ -14,11 +14,6 @@ use rocket::tokio::fs::{File, read_dir, remove_file};
 use rocket::response::stream::ReaderStream;
 use rocket::tokio::task::spawn_blocking;
 use rocket::serde::{Serialize, json::Json};
-
-#[get("/")]
-fn index() -> &'static str {
-    "Hello, world!"
-}
 
 struct AuthKey(String);
 
@@ -60,8 +55,8 @@ impl<'r> FromRequest<'r> for &'r ReqHost {
 async fn get_image(id:&str) -> NamedFile {
     NamedFile::open(format!("./images/{}.png",&id)).await.unwrap()
 }
-#[delete("/images/<id>",_b:UseAuthKey)]
-async fn delete_image(id:&str) -> std::io::Result<()> {
+#[delete("/images/<id>")]
+async fn delete_image(id:&str,_b:UseAuthKey) -> std::io::Result<()> {
     remove_file(format!("./images/{}.png",&id)).await
 }
 #[get("/images")]
@@ -97,9 +92,17 @@ async fn main() {
     let rocket = rocket::build();
     let auth : String = rocket.figment().extract_inner("auth_key").unwrap_or("".into());
     println!("auth: {:?}",auth);
-    rocket.mount("/", routes![index,upload_img,get_image,get_images,delete_image])
-        .register("/", catchers![invalid_request])
-        .manage(AuthKey(auth))
+    if cfg!(not(debug_assertions))
+    {
+        rocket.mount("/api/", routes![upload_img,get_image,get_images,delete_image])
+            .register("/", catchers![invalid_request])
+            .manage(AuthKey(auth))
+            .mount("/", FileServer::from(relative!("client/dist")))
+    } else {
+        rocket.mount("/api/", routes![upload_img,get_image,get_images,delete_image])
+            .register("/", catchers![invalid_request])
+            .manage(AuthKey(auth))
+    }
         .launch()
         .await
         .unwrap();
