@@ -1,7 +1,8 @@
 use std::fs;
 use std::future::Future;
+use std::path::Path;
 use cuid::cuid;
-use rocket::{catchers, Request, routes, get, catch, FromForm, post, request, Data, State, Config};
+use rocket::{catchers, Request, routes, get, catch, FromForm, post, request, Data, State, Config,delete};
 use rocket::data::ToByteUnit;
 use rocket::form::{Form, Strict};
 use rocket::fs::{NamedFile, TempFile};
@@ -9,8 +10,10 @@ use rocket::futures::future::IntoStream;
 use rocket::futures::FutureExt;
 use rocket::http::Status;
 use rocket::request::FromRequest;
-use rocket::tokio::fs::File;
+use rocket::tokio::fs::{File, read_dir, remove_file};
 use rocket::response::stream::ReaderStream;
+use rocket::tokio::task::spawn_blocking;
+use rocket::serde::{Serialize, json::Json};
 
 #[get("/")]
 fn index() -> &'static str {
@@ -39,7 +42,8 @@ impl<'r> FromRequest<'r> for UseAuthKey {
         }
     }
 }
-
+#[derive(Serialize)]
+struct ImagesObj(Vec<String>);
 
 struct ReqHost(pub String);
 #[rocket::async_trait]
@@ -53,8 +57,25 @@ impl<'r> FromRequest<'r> for &'r ReqHost {
     }
 }
 #[get("/images/<id>")]
-async fn get_image(id:&str) -> std::io::Result<NamedFile> {
-    NamedFile::open(format!("./images/{}.png",&id)).await
+async fn get_image(id:&str) -> NamedFile {
+    NamedFile::open(format!("./images/{}.png",&id)).await.unwrap()
+}
+#[delete("/images/<id>",_b:UseAuthKey)]
+async fn delete_image(id:&str) -> std::io::Result<()> {
+    remove_file(format!("./images/{}.png",&id)).await
+}
+#[get("/images")]
+async fn get_images() -> Json<ImagesObj> {
+    let images = spawn_blocking(|| {
+        let imgs = std::fs::read_dir("./images").unwrap();
+        let mut vec:Vec<String> = vec!{};
+        for img in imgs {
+            vec.push(img.unwrap().path().file_stem().unwrap().to_str().unwrap().to_string())
+        }
+        vec
+    }).await.unwrap();
+    println!("{:#?}",images);
+    Json(ImagesObj(images))
 }
 #[post("/upload",data="<bin>")]
 async fn upload_img(mut bin:Data<'_>, host_name:&ReqHost,_b:UseAuthKey) -> String {
@@ -76,7 +97,7 @@ async fn main() {
     let rocket = rocket::build();
     let auth : String = rocket.figment().extract_inner("auth_key").unwrap_or("".into());
     println!("auth: {:?}",auth);
-    rocket.mount("/", routes![index,upload_img,get_image])
+    rocket.mount("/", routes![index,upload_img,get_image,get_images,delete_image])
         .register("/", catchers![invalid_request])
         .manage(AuthKey(auth))
         .launch()
